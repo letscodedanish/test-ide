@@ -64,9 +64,8 @@ export default function PlaygroundPage() {
   const [isRunning, setIsRunning] = useState(false);
   // Terminal state
   const [terminalOutput, setTerminalOutput] = useState<string[]>([
-    'Welcome to the playground terminal!',
-    'Container starting with boilerplate from R2...',
-    ''
+    'Connecting to container terminal...',
+    'Please wait while we establish connection...'
   ]);
   const [terminalInput, setTerminalInput] = useState('');
   const [isTerminalReady, setIsTerminalReady] = useState(false);
@@ -159,46 +158,36 @@ export default function PlaygroundPage() {
   const startTerminalConnection = (playgroundId: string) => {
     console.log('Starting terminal connection for playground:', playgroundId);
     
-    // Initial fetch to get terminal status
-    fetchTerminalOutput(playgroundId);
-    
-    // Set up polling for terminal updates
-    pollingIntervalRef.current = setInterval(() => {
-      fetchTerminalOutput(playgroundId);
-    }, 1000);
+    // Create terminal session
+    initializeTerminal(playgroundId);
   };
 
-  const fetchTerminalOutput = async (playgroundId: string) => {
+  const initializeTerminal = async (playgroundId: string) => {
     try {
       const response = await fetch(`/api/terminal/${playgroundId}`);
       if (response.ok) {
         const data = await response.json();
-        setTerminalOutput(data.output);
+        console.log('Terminal session initialized:', data);
+        setIsTerminalReady(data.isActive);
+        setTerminalOutput(['Terminal connected to container', 'Type commands to interact with your playground environment', '']);
         
-        // Set terminal ready and auto-focus input
-        if (data.isReady && !isTerminalReady) {
-          setIsTerminalReady(true);
-          setTimeout(() => {
-            if (terminalInputRef.current) {
-              terminalInputRef.current.focus();
-            }
-          }, 100);
+        if (terminalInputRef.current) {
+          terminalInputRef.current.focus();
         }
-        
-        // Auto-scroll to bottom
-        setTimeout(() => {
-          if (terminalRef.current) {
-            terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-          }
-        }, 50);
+      } else {
+        setTerminalOutput(['Failed to connect to terminal', 'Please try starting the container first']);
       }
     } catch (error) {
-      console.error('Error fetching terminal output:', error);
+      console.error('Error initializing terminal:', error);
+      setTerminalOutput(['Terminal connection failed', 'Please check if the container is running']);
     }
   };
 
-  const sendTerminalInput = async (input: string) => {
+  const executeTerminalCommand = async (command: string) => {
     if (!params.id) return;
+    
+    // Add command to output immediately for better UX
+    setTerminalOutput(prev => [...prev, `$ ${command}`, 'Executing...']);
     
     try {
       const response = await fetch(`/api/terminal/${params.id}`, {
@@ -206,16 +195,48 @@ export default function PlaygroundPage() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ input }),
+        body: JSON.stringify({ 
+          action: 'execute',
+          command: command
+        }),
       });
       
       if (response.ok) {
-        // Immediately fetch updated output
-        fetchTerminalOutput(params.id as string);
+        const result = await response.json();
+        setTerminalOutput(prev => {
+          const newOutput = [...prev];
+          // Remove the "Executing..." line
+          newOutput.pop();
+          // Add the actual output
+          if (result.output) {
+            newOutput.push(result.output);
+          }
+          return newOutput;
+        });
+      } else {
+        setTerminalOutput(prev => {
+          const newOutput = [...prev];
+          newOutput.pop(); // Remove "Executing..."
+          newOutput.push('Command execution failed');
+          return newOutput;
+        });
       }
     } catch (error) {
       console.error('Error sending terminal input:', error);
+      setTerminalOutput(prev => {
+        const newOutput = [...prev];
+        newOutput.pop(); // Remove "Executing..."
+        newOutput.push('Network error executing command');
+        return newOutput;
+      });
     }
+    
+    // Auto-scroll to bottom
+    setTimeout(() => {
+      if (terminalRef.current) {
+        terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+      }
+    }, 100);
   };
 
   const handleEditorChange = (value: string | undefined) => {
@@ -357,12 +378,14 @@ export default function PlaygroundPage() {
     if (!activeFile || !playground) return;
     
     try {
-      await fetch(`/api/playgrounds/${playground.id}/files/${activeFile.id}`, {
-        method: 'PUT',
+      await fetch(`/api/containers/${playground.id}/files`, {
+        method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
+          action: 'write',
+          filePath: activeFile.path || `/workspace/${activeFile.name}`,
           content: activeFile.content
         }),
       });
@@ -384,7 +407,7 @@ export default function PlaygroundPage() {
     if (!playground) return;
     
     setIsRunning(true);
-    setTerminalOutput([]);
+    setTerminalOutput(['Starting container...']);
     
     try {
       const response = await fetch(`/api/playgrounds/${playground.id}/run`, {
@@ -393,12 +416,21 @@ export default function PlaygroundPage() {
       
       if (response.ok) {
         const result = await response.json();
-        setPreviewUrl(result.previewUrl || '');
+        
+        // Set preview URL based on container ports
+        if (result.container && result.container.ports && result.container.ports['3000']) {
+          setPreviewUrl(`/api/containers/${playground.id}/preview`);
+        }
         
         toast({
           title: "Success",
           description: "Playground started successfully",
         });
+        
+        // Reinitialize terminal connection
+        setTimeout(() => {
+          initializeTerminal(playground.id);
+        }, 2000);
       }
     } catch (error) {
       toast({
@@ -439,7 +471,7 @@ export default function PlaygroundPage() {
     if (e.key === 'Enter') {
       const input = terminalInput.trim();
       if (input) {
-        sendTerminalInput(input);
+        executeTerminalCommand(input);
         setTerminalInput('');
       }
     }
@@ -707,12 +739,14 @@ export default function PlaygroundPage() {
                         src={previewUrl}
                         className="w-full h-full border-0"
                         title="Preview"
+                        sandbox="allow-scripts allow-same-origin allow-forms"
                       />
                     ) : (
                       <div className="h-full flex items-center justify-center text-slate-500">
                         <div className="text-center">
                           <Eye className="h-12 w-12 mx-auto mb-4 text-slate-400" />
-                            <p className="text-slate-500">Run your code to see the preview</p>
+                          <p className="text-slate-500">Start the container to see the preview</p>
+                          <p className="text-xs text-slate-400 mt-2">Run 'npm run dev' in terminal to start your app</p>
                         </div>
                       </div>
                     )}
@@ -766,7 +800,7 @@ export default function PlaygroundPage() {
                             value={terminalInput}
                             onChange={(e) => setTerminalInput(e.target.value)}
                             onKeyDown={handleTerminalInput}
-                            placeholder={isTerminalReady ? "Type your command..." : "Terminal starting..."}
+                            placeholder={isTerminalReady ? "Type your command..." : "Connecting to container..."}
                             disabled={!isTerminalReady}
                             className="flex-1 bg-transparent border-0 text-slate-300 font-mono text-sm focus:outline-none placeholder-slate-500"
                             autoComplete="off"

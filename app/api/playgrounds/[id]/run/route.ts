@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import * as k8s from '@kubernetes/client-node';
-import { R2Service } from '@/lib/r2-service';
+import { DockerService } from '@/lib/docker-service';
+import { handleApiError } from '@/lib/error-handler';
 
 // Force dynamic rendering for this API route
 export const dynamic = 'force-dynamic';
@@ -16,6 +16,8 @@ if (typeof globalThis !== 'undefined') {
 } else {
   globalPlaygroundStorage = new Map();
 }
+
+const dockerService = DockerService.getInstance();
 
 export async function POST(
   request: NextRequest,
@@ -34,185 +36,57 @@ export async function POST(
 
     console.log(`Starting container for playground ${id} with template: ${playground.template}`);
 
-    // Initialize Kubernetes client
-    const kc = new k8s.KubeConfig();
-    kc.loadFromDefault();
-    const k8sApi = kc.makeApiClient(k8s.CoreV1Api);
-
-    const containerName = `playground-${id}`;
-    const namespace = 'default';
-
-    // Check if pod already exists
+    // Check if container already exists
     try {
-      const existingPod = await k8sApi.readNamespacedPod({
-        name: containerName,
-        namespace: namespace
-      });
-      if (existingPod.status?.phase === 'Running') {
-        console.log(`Container ${containerName} is already running`);
+      const existingContainer = await dockerService.getContainer(id);
+      if (existingContainer && existingContainer.status === 'running') {
+        console.log(`Container for playground ${id} is already running`);
         return NextResponse.json({
           message: 'Container already running',
           status: 'running',
-          containerName
+          container: existingContainer
+        });
+      }
+      
+      if (existingContainer && existingContainer.status !== 'running') {
+        // Start existing container
+        const startedContainer = await dockerService.startContainer(id);
+        playground.isRunning = true;
+        globalPlaygroundStorage.set(id, playground);
+        
+        return NextResponse.json({
+          message: 'Container started successfully',
+          status: 'running',
+          container: startedContainer
         });
       }
     } catch (error) {
-      // Pod doesn't exist, which is expected
+      // Container doesn't exist, which is expected for new playgrounds
     }
 
-    // Create pod with init container for R2 template download
-    const pod = await createPodWithTemplate(k8sApi, containerName, namespace, playground.template);
+    // Create new container
+    const container = await dockerService.createContainer({
+      playgroundId: id,
+      template: playground.template,
+      language: playground.language
+    });
     
     // Mark as running in storage
     playground.isRunning = true;
     globalPlaygroundStorage.set(id, playground);
 
-    console.log(`Container ${containerName} started successfully`);
+    console.log(`Container for playground ${id} started successfully`);
 
     return NextResponse.json({
       message: 'Container started successfully',
-      status: 'starting',
-      containerName
+      status: 'running',
+      container
     });
 
   } catch (error) {
     console.error('Error starting container:', error);
-    return NextResponse.json(
-      { error: 'Failed to start container' },
-      { status: 500 }
-    );
+    return handleApiError(error);
   }
-}
-
-async function createPodWithTemplate(
-  k8sApi: k8s.CoreV1Api,
-  containerName: string,
-  namespace: string,
-  templateName: string
-): Promise<any> {
-  
-  // Get the template for language detection
-  const template = await R2Service.getBoilerplateTemplate(templateName);
-  const language = template?.language || 'javascript';
-  
-  // Select base image based on language
-  const baseImage = getBaseImageForLanguage(language);
-  
-  const podSpec = {
-    metadata: {
-      name: containerName,
-      labels: {
-        app: 'playground',
-        template: templateName
-      }
-    },
-    spec: {
-      initContainers: [
-        {
-          name: 'template-downloader',
-          image: 'amazon/aws-cli:2.13.0',
-          command: ['/bin/sh'],
-          args: [
-            '-c',
-            `
-            # Configure AWS CLI for R2
-            aws configure set aws_access_key_id "8d94442465c24b84c7c205bac45af892"
-            aws configure set aws_secret_access_key "ef4d0d25e924a0954f1b38e3e004b97f9455c61792e164a24d8ae7810e5a51c6"
-            aws configure set region us-east-1
-            
-            # Download template files from R2
-            echo "Downloading template files for ${templateName}..."
-            aws s3 sync s3://repl/repl/base/${templateName}/ /workspace/ --endpoint-url=https://8d94442465c24b84c7c205bac45af892.r2.cloudflarestorage.com --no-verify-ssl
-            
-            # Set proper permissions
-            chmod -R 755 /workspace
-            chown -R 1001:1001 /workspace
-            
-            echo "Template files downloaded successfully"
-            ls -la /workspace/
-            `
-          ],
-          volumeMounts: [
-            {
-              name: 'workspace',
-              mountPath: '/workspace'
-            }
-          ],
-          securityContext: {
-            runAsUser: 0 // Root for init container to set permissions
-          }
-        }
-      ],
-      containers: [
-        {
-          name: 'playground',
-          image: baseImage,
-          command: ['/bin/bash'],
-          args: ['-c', 'while true; do sleep 3600; done'], // Keep container running
-          workingDir: '/workspace',
-          volumeMounts: [
-            {
-              name: 'workspace',
-              mountPath: '/workspace'
-            }
-          ],
-          resources: {
-            requests: {
-              memory: '512Mi',
-              cpu: '250m'
-            },
-            limits: {
-              memory: '1Gi',
-              cpu: '500m'
-            }
-          },
-          securityContext: {
-            runAsUser: 1001,
-            runAsNonRoot: true,
-            allowPrivilegeEscalation: false
-          },
-          env: [
-            {
-              name: 'TEMPLATE_NAME',
-              value: templateName
-            },
-            {
-              name: 'LANGUAGE',
-              value: language
-            }
-          ]
-        }
-      ],
-      volumes: [
-        {
-          name: 'workspace',
-          emptyDir: {}
-        }
-      ],
-      restartPolicy: 'Never'
-    }
-  };
-
-  return await k8sApi.createNamespacedPod({
-    namespace: namespace,
-    body: podSpec
-  });
-}
-
-function getBaseImageForLanguage(language: string): string {
-  const imageMap: { [key: string]: string } = {
-    'javascript': 'node:18-alpine',
-    'typescript': 'node:18-alpine',
-    'python': 'python:3.11-alpine',
-    'next-js': 'node:18-alpine',
-    'react-js': 'node:18-alpine',
-    'node-js': 'node:18-alpine',
-    'rust': 'rust:1.70-alpine',
-    'cpp': 'gcc:11-alpine',
-    'empty': 'ubuntu:22.04'
-  };
-  
-  return imageMap[language] || 'ubuntu:22.04';
 }
 
 export async function DELETE(
@@ -232,23 +106,12 @@ export async function DELETE(
 
     console.log(`Stopping container for playground ${id}`);
 
-    // Initialize Kubernetes client
-    const kc = new k8s.KubeConfig();
-    kc.loadFromDefault();
-    const k8sApi = kc.makeApiClient(k8s.CoreV1Api);
-
-    const containerName = `playground-${id}`;
-    const namespace = 'default';
-
-    // Delete the pod
+    // Stop the container
     try {
-      await k8sApi.deleteNamespacedPod({
-        name: containerName,
-        namespace: namespace
-      });
-      console.log(`Container ${containerName} stopped successfully`);
+      await dockerService.stopContainer(id);
+      console.log(`Container for playground ${id} stopped successfully`);
     } catch (error) {
-      console.log(`Container ${containerName} was not running`);
+      console.log(`Container for playground ${id} was not running`);
     }
 
     // Mark as stopped in storage
@@ -262,9 +125,6 @@ export async function DELETE(
 
   } catch (error) {
     console.error('Error stopping container:', error);
-    return NextResponse.json(
-      { error: 'Failed to stop container' },
-      { status: 500 }
-    );
+    return handleApiError(error);
   }
 }

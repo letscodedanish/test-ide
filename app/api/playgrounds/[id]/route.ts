@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
+import { DockerService } from '@/lib/docker-service';
 
 // Force dynamic rendering for this API route
 export const dynamic = 'force-dynamic';
@@ -16,6 +17,8 @@ if (typeof globalThis !== 'undefined') {
 } else {
   globalPlaygroundStorage = new Map();
 }
+
+const dockerService = DockerService.getInstance();
 
 export async function GET(
   request: NextRequest,
@@ -47,7 +50,29 @@ export async function GET(
     if (!playground.files || playground.files.length === 0) {
       console.log(`Creating sample file structure for ${playground.template}`);
       
-      playground.files = createSampleFileStructure(playground.template, playground.language);
+      // Try to get files from container first
+      try {
+        const containerFiles = await dockerService.getContainerFiles(id);
+        if (containerFiles.length > 0) {
+          playground.files = await Promise.all(
+            containerFiles.slice(0, 20).map(async (file) => {
+              if (file.type === 'file') {
+                const content = await dockerService.readFile(id, file.path);
+                return {
+                  ...file,
+                  content
+                };
+              }
+              return file;
+            })
+          );
+        } else {
+          playground.files = createSampleFileStructure(playground.template, playground.language);
+        }
+      } catch (error) {
+        console.log('Container not available, using sample files');
+        playground.files = createSampleFileStructure(playground.template, playground.language);
+      }
       
       // Update storage with sample files
       globalPlaygroundStorage.set(id, playground);
