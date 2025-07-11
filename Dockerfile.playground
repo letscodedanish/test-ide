@@ -1,0 +1,82 @@
+# Dockerfile for playground runtime environments
+FROM node:18-alpine AS node-base
+
+# Install security updates
+RUN apk update && apk upgrade
+
+# Install common development tools
+RUN apk add --no-cache \
+    git \
+    curl \
+    vim \
+    bash \
+    python3 \
+    py3-pip \
+    build-base \
+    dumb-init \
+    aws-cli
+
+# Create workspace directory
+WORKDIR /workspace
+
+# Install global npm packages commonly used in playgrounds
+RUN npm install -g \
+    nodemon \
+    typescript \
+    ts-node \
+    create-react-app \
+    @vitejs/create-vite \
+    express-generator
+
+# Python runtime
+FROM python:3.11-alpine AS python-base
+
+RUN apk add --no-cache \
+    git \
+    curl \
+    vim \
+    bash \
+    build-base
+
+WORKDIR /workspace
+
+# Install common Python packages
+RUN pip install \
+    flask \
+    fastapi \
+    uvicorn \
+    requests \
+    numpy \
+    pandas \
+    matplotlib \
+    seaborn
+
+# Multi-language runtime (default)
+FROM node-base AS runtime
+
+# Copy Python from python-base
+COPY --from=python-base /usr/local/bin/python3 /usr/local/bin/python3
+COPY --from=python-base /usr/local/lib/python3.11 /usr/local/lib/python3.11
+
+# Set up environment
+ENV PATH="/usr/local/bin:$PATH"
+ENV PYTHONPATH="/usr/local/lib/python3.11/site-packages"
+
+# Create non-root user for security
+RUN addgroup -g 1001 playground && \
+    adduser -D -u 1001 -G playground playground
+
+# Create and set permissions for workspace
+RUN chown -R playground:playground /workspace
+USER playground
+
+# Expose common development ports
+EXPOSE 1337 1338 3000 5000 8000
+
+# Use dumb-init for proper signal handling
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["sh"]
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD echo "healthy"

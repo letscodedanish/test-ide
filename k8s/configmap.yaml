@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: playground-config
+  namespace: cursor-test
+data:
+  NODE_ENV: "production"
+  PORT: "3000"
+  PLAYGROUND_RUNTIME_IMAGE: "us-central1-docker.pkg.dev/organic-ruler-207123/playground-repo/playground-runtime:latest"
+  REDIS_URL: "redis://redis-service:6379"
+  POSTGRES_HOST: "ep-falling-lab-a52eneef-pooler.us-east-2.aws.neon.tech"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "neondb"
+  NEXT_TELEMETRY_DISABLED: "1"

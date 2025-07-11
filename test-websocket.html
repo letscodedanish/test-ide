@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Test</title>
+</head>
+<body>
+    <h1>WebSocket Terminal Test</h1>
+    <div id="output" style="background: black; color: white; padding: 10px; height: 300px; overflow-y: auto; font-family: monospace;"></div>
+    <input id="input" type="text" placeholder="Type a command and press Enter" style="width: 100%; padding: 10px; margin-top: 10px;">
+    
+    <script>
+        const output = document.getElementById('output');
+        const input = document.getElementById('input');
+        
+        function log(message) {
+            output.innerHTML += message + '<br>';
+            output.scrollTop = output.scrollHeight;
+        }
+        
+        // Connect to WebSocket
+        const ws = new WebSocket('ws://localhost:3000/api/ws/test-playground');
+        
+        ws.onopen = () => {
+            log('✅ WebSocket connected');
+            ws.send(JSON.stringify({ type: 'terminal_start' }));
+        };
+        
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                log('📨 Received: ' + JSON.stringify(data));
+                
+                if (data.type === 'terminal_output') {
+                    log('💻 ' + data.output);
+                }
+            } catch (error) {
+                log('❌ Error parsing message: ' + error.message);
+            }
+        };
+        
+        ws.onclose = (event) => {
+            log('❌ WebSocket closed: ' + event.code + ' ' + event.reason);
+        };
+        
+        ws.onerror = (error) => {
+            log('❌ WebSocket error: ' + error);
+        };
+        
+        // Handle input
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                const command = input.value.trim();
+                if (command && ws.readyState === WebSocket.OPEN) {
+                    log('📤 Sending: ' + command);
+                    ws.send(JSON.stringify({
+                        type: 'terminal_input',
+                        input: command
+                    }));
+                    input.value = '';
+                }
+            }
+        });
+        
+        // Focus input
+        input.focus();
+    </script>
+</body>
+</html> 

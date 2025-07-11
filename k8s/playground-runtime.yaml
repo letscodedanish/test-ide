@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: playground-runtime
+  namespace: cursor-test
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: playground-runtime
+  template:
+    metadata:
+      labels:
+        app: playground-runtime
+    spec:
+      containers:
+      - name: playground-runtime
+        image: us-central1-docker.pkg.dev/organic-ruler-207123/playground-repo/playground-runtime:latest
+        ports:
+        - containerPort: 1337
+        - containerPort: 1338
+        env:
+        - name: PLAYGROUND_MODE
+          value: "runtime"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1001
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: playground-runtime-service
+  namespace: cursor-test
+spec:
+  selector:
+    app: playground-runtime
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 1337
+    - name: websocket
+      protocol: TCP
+      port: 1338
+      targetPort: 1338
+  type: ClusterIP
